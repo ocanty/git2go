@@ -180,4 +180,29 @@ void _go_git_writestream_free(git_writestream *stream)
 	stream->free(stream);
 }
 
+int _go_git_apply(git_repository *repo, git_diff *diff, int location, void* payload) {
+	git_apply_options options = {
+		GIT_APPLY_OPTIONS_VERSION,
+		(git_apply_delta_cb)&applyForEachFileCb,
+		(git_apply_hunk_cb)&applyForEachHunkCb,
+		payload
+	};
+
+	return git_apply(repo, diff, (git_apply_location_t)location, &options);
+}
+
+int _go_git_apply_to_tree(git_index *out, git_repository *repo, git_tree *preimage, git_diff *diff, void* payload) {
+	git_apply_options options = {
+		GIT_APPLY_OPTIONS_VERSION,
+		(git_apply_delta_cb)&applyForEachFileCb,
+		(git_apply_hunk_cb)&applyForEachHunkCb,
+		payload
+	};
+
+	git_index** index = &out;
+
+	return git_apply_to_tree(index, repo, preimage, diff, &options);
+}
+
+
 /* EOF */

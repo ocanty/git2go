@@ -6,6 +6,9 @@ package git
 extern int _go_git_diff_foreach(git_diff *diff, int eachFile, int eachHunk, int eachLine, void *payload);
 extern void _go_git_setup_diff_notify_callbacks(git_diff_options* opts);
 extern int _go_git_diff_blobs(git_blob *old, const char *old_path, git_blob *new, const char *new_path, git_diff_options *opts, int eachFile, int eachHunk, int eachLine, void *payload);
+
+extern int _go_git_apply(git_repository *repo, git_diff *diff, int location, void* payload);
+extern int _go_git_apply_to_tree(git_index *out, git_repository *repo, git_tree *preimage, git_diff *diff, void* payload);
 */
 import "C"
 import (
@@ -807,4 +810,125 @@ func DiffBlobs(oldBlob *Blob, oldAsPath string, newBlob *Blob, newAsPath string,
 	}
 
 	return nil
+}
+
+
+type ApplyLocation int
+
+const (
+	ApplyLocationWorkDir ApplyLocation = C.GIT_APPLY_LOCATION_WORKDIR
+	ApplyLocationIndex   ApplyLocation = C.GIT_APPLY_LOCATION_INDEX
+	ApplyLocationBoth 	 ApplyLocation = C.GIT_APPLY_LOCATION_BOTH
+)
+
+type ApplyForEachHunkCallback func(DiffHunk) (shouldApply int, err error) 
+type ApplyForEachFileCallback func(DiffDelta) (shouldApply int, applyHunkCallback ApplyForEachHunkCallback, err error)
+
+
+type applyCallbacksData struct {
+	FileCallback ApplyForEachFileCallback
+	HunkCallback ApplyForEachHunkCallback
+	Error		 error	
+}
+
+func (v *Repository) ApplyDiff(diff *Diff, location ApplyLocation, fileCallback ApplyForEachFileCallback) error {
+	if diff.ptr == nil {
+		return ErrInvalid
+	}
+
+	callbackData := &applyCallbacksData{
+		FileCallback: fileCallback,
+	}
+
+	callbackDataHandle := pointerHandles.Track(callbackData)
+	defer pointerHandles.Untrack(callbackDataHandle)
+
+	ecode := C._go_git_apply(v.ptr, diff.ptr, C.int(location), callbackDataHandle)
+	runtime.KeepAlive(v)
+	runtime.KeepAlive(diff)
+
+	if ecode != 0 || callbackData.Error != nil {
+		return callbackData.Error
+	}
+
+	return nil
+}
+
+func (tree *Tree) ApplyDiff(diff *Diff, repo *Repository, fileCallback ApplyForEachFileCallback) (*Index, error) {
+	index, err := NewIndex()
+	if err != nil {
+		return nil, err
+	}
+	
+	if diff.ptr == nil {
+		return nil, ErrInvalid
+	}
+
+	callbackData := &applyCallbacksData{
+		FileCallback: fileCallback,
+	}
+
+	callbackDataHandle := pointerHandles.Track(callbackData)
+	defer pointerHandles.Untrack(callbackDataHandle)
+
+	ecode := C._go_git_apply_to_tree(index.ptr, repo.ptr, tree.cast_ptr, diff.ptr, callbackDataHandle)
+	runtime.KeepAlive(repo)
+	runtime.KeepAlive(diff)
+
+	if ecode != 0 || callbackData.Error != nil {
+		return nil, callbackData.Error
+	}
+
+	return index, nil
+}
+
+
+
+//export applyForEachFileCb
+func applyForEachFileCb(delta *C.git_diff_delta, handle unsafe.Pointer) int {
+	payload := pointerHandles.Get(handle)
+	data, ok := payload.(*applyCallbacksData)
+
+	if !ok {
+		panic("could not retrieve data for handle")
+	}
+
+	data.HunkCallback = nil
+	if data.FileCallback != nil {
+		shouldApply, hunkCb, err := data.FileCallback(diffDeltaFromC(delta))
+
+		if err != nil {
+			data.Error = err
+			return -1
+		}
+
+		data.HunkCallback = hunkCb
+		return shouldApply
+	}
+
+	return -1
+}
+
+
+//export applyForEachHunkCb
+func applyForEachHunkCb(hunk *C.git_diff_hunk, handle unsafe.Pointer) int {
+	payload := pointerHandles.Get(handle)
+	data, ok := payload.(*applyCallbacksData)
+
+	if !ok {
+		panic("could not retrieve data for handle")
+	}
+
+	if data.HunkCallback != nil {
+		shouldApply, err := data.HunkCallback(diffHunkFromC(hunk))
+
+		if err != nil {
+			data.Error = err
+			return -1
+		}
+		
+		return shouldApply
+	}
+
+	return -1
 }
